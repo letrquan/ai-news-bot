@@ -28,6 +28,8 @@ const config = {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+  AI_PROVIDER: process.env.AI_PROVIDER || 'auto',
+  AI_MAX_INPUT_ITEMS: parseInteger(process.env.AI_MAX_INPUT_ITEMS, 8),
 
   ENABLED_SOURCES: splitCsv(process.env.ENABLED_SOURCES, 'x,hackernews,reddit,rss'),
   X_MAX_RESULTS: parseInteger(process.env.X_MAX_RESULTS || process.env.TWITTER_MAX_RESULTS, 20),
@@ -90,6 +92,10 @@ function validateConfig() {
 
   if (config.MIN_IMPORTANCE < 1 || config.MIN_IMPORTANCE > 10) {
     throw new Error('MIN_IMPORTANCE must be between 1 and 10');
+  }
+
+  if (config.AI_MAX_INPUT_ITEMS <= 0) {
+    throw new Error('AI_MAX_INPUT_ITEMS must be greater than 0');
   }
 
   if (missing.length) {

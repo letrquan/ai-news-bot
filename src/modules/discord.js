@@ -112,13 +112,6 @@ async function sendNewsUpdate(items, logger = console) {
     }
   }
 
-  if (postedItems.length > 0) {
-    const links = postedItems.map((result, index) =>
-      `${index + 1}. [${result.title}](${result.item.url})`
-    ).join('\n');
-    await channel.send(`📋 **Quick Links:**\n${links}`);
-  }
-
   return postedItems;
 }
 

@@ -77,6 +77,8 @@ The compose setup stores runtime state in `./data/bot-state.json` on the host.
 | `HOURS_LOOKBACK` | `6` | Keep only items newer than this |
 | `MIN_IMPORTANCE` | `6` | Minimum AI score kept |
 | `MAX_POSTS_PER_RUN` | `10` | Maximum items posted per run |
+| `AI_PROVIDER` | `auto` | `auto`, `zai`, or another OpenAI-compatible provider label |
+| `AI_MAX_INPUT_ITEMS` | `8` | Cap items sent to the model per curation request |
 | `DRY_RUN` | `false` | Skip Discord posting and log the digest |
 | `STATE_FILE` | `bot-state.json` | Persistent seen/posted state file |
 
@@ -121,3 +123,4 @@ ai-news-bot/
 - `DRY_RUN=true` exercises the full collection and curation pipeline without sending to Discord.
 - The repo still uses a Discord selfbot client. That violates Discord's ToS and is operationally fragile.
 - PM2 scripts remain available, but Docker is now the preferred deployment path.
+- The AI layer now applies provider-specific request shaping for Z.AI / GLM models, including disabled thinking and JSON mode.
