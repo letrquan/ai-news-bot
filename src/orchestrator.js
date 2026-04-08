@@ -1,6 +1,7 @@
 const { crawlTweets, crawlTweetsFallback } = require('./modules/crawler');
 const { filterAndSummarize } = require('./modules/ai-filter');
 const { init: initDiscord, sendNewsUpdate, destroy: destroyDiscord } = require('./modules/discord');
+const { filterDuplicate } = require('./utils/cache');
 const config = require('./config');
 const { CronJob } = require('cron');
 
@@ -34,10 +35,15 @@ async function runPipeline() {
 
     const cutoff = new Date(Date.now() - config.HOURS_LOOKBACK * 60 * 60 * 1000);
     const recentTweets = tweets.filter(t => new Date(t.createdAt) > cutoff);
-    console.log(`[Pipeline] ${recentTweets.length} tweets from last ${config.HOURS_LOOKBACK}h`);
+    const newTweets = filterDuplicate(recentTweets);
+
+    if (!newTweets.length) {
+      console.log('[Pipeline] No new tweets. Skipping.');
+      return;
+    }
 
     console.log('[Pipeline] Step 2: AI filtering & summarizing...');
-    const curated = await filterAndSummarize(recentTweets);
+    const curated = await filterAndSummarize(newTweets);
 
     if (!curated.length) {
       console.log('[Pipeline] No noteworthy updates found.');
