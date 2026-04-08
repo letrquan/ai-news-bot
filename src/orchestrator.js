@@ -85,10 +85,18 @@ async function start() {
     schedule: config.SCHEDULE_CRON,
     timezone: config.TIMEZONE,
     dryRun: config.DRY_RUN,
+    runOnce: config.RUN_ONCE,
     enabledSources: config.ENABLED_SOURCES,
   });
 
   await initDiscord(logger);
+
+  if (config.RUN_ONCE) {
+    logger.info('[Startup] RUN_ONCE enabled, executing a single immediate update');
+    await runPipeline();
+    await destroyDiscord();
+    return;
+  }
 
   logger.info(`[Scheduler] Running every: ${config.SCHEDULE_CRON}`);
 

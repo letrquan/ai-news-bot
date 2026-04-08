@@ -8,7 +8,7 @@ services:
     env_file:
       - .env
     environment:
-      STATE_FILE: /app/data/bot-state.json
+      STATE_FILE: /app/data/bot-state.db
     volumes:
       - ./data:/app/data
     command: npm start

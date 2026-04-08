@@ -27,7 +27,7 @@ const config = {
 
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
-  OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+  OPENAI_MODEL: process.env.OPENAI_MODEL || 'glm-5.1',
   AI_PROVIDER: process.env.AI_PROVIDER || 'auto',
   AI_MAX_INPUT_ITEMS: parseInteger(process.env.AI_MAX_INPUT_ITEMS, 8),
 
@@ -53,6 +53,7 @@ const config = {
   SCHEDULE_CRON: process.env.SCHEDULE_CRON || '0 */3 * * *',
   TIMEZONE: process.env.TIMEZONE || 'Asia/Ho_Chi_Minh',
   DRY_RUN: parseBoolean(process.env.DRY_RUN, false),
+  RUN_ONCE: parseBoolean(process.env.RUN_ONCE, false),
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
   STATE_FILE: process.env.STATE_FILE,
   HTTP_USER_AGENT: process.env.HTTP_USER_AGENT || 'ai-news-bot/1.0 (+https://github.com/)',

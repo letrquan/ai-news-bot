@@ -4,4 +4,7 @@ npm-debug.log
 .gitignore
 .env
 bot-state.json
+bot-state.db
+bot-state.db-shm
+bot-state.db-wal
 data

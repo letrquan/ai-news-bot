@@ -25,7 +25,7 @@ Automated AI news pipeline: **multi-source collection -> OpenAI-compatible curat
 └──────┬───────┘
        ▼
 ┌──────────────┐
-│   Discord    │  Digest embeds + quick links
+│   Discord    │  Digest embeds
 └──────────────┘
 ```
 
@@ -42,10 +42,22 @@ Edit `.env`, then run:
 npm start
 ```
 
+Run one immediate update and exit:
+
+```bash
+npm run run-now
+```
+
 Safe test:
 
 ```bash
 npm run dry-run
+```
+
+Safe one-shot test:
+
+```bash
+npm run run-now:dry
 ```
 
 ## Docker Deployment
@@ -62,7 +74,13 @@ Stop:
 docker compose down
 ```
 
-The compose setup stores runtime state in `./data/bot-state.json` on the host.
+The compose setup stores runtime state in `./data/bot-state.db` on the host.
+
+Run one immediate update inside Docker and exit:
+
+```bash
+npm run docker:run-now
+```
 
 ## Important Config
 
@@ -80,7 +98,8 @@ The compose setup stores runtime state in `./data/bot-state.json` on the host.
 | `AI_PROVIDER` | `auto` | `auto`, `zai`, or another OpenAI-compatible provider label |
 | `AI_MAX_INPUT_ITEMS` | `8` | Cap items sent to the model per curation request |
 | `DRY_RUN` | `false` | Skip Discord posting and log the digest |
-| `STATE_FILE` | `bot-state.json` | Persistent seen/posted state file |
+| `RUN_ONCE` | `false` | Run a single immediate update and exit |
+| `STATE_FILE` | `bot-state.db` | Persistent SQLite state file |
 
 If `x` is enabled in `ENABLED_SOURCES`, `X_AUTH_TOKEN` and `X_CT0` are required. Other sources work without those secrets.
 
@@ -90,7 +109,7 @@ If `x` is enabled in `ENABLED_SOURCES`, `X_AUTH_TOKEN` and `X_CT0` are required.
 2. The aggregator normalizes them into one item format.
 3. The pipeline deduplicates, ranks, and drops stale items.
 4. The model selects the strongest stories and writes short summaries.
-5. Discord receives the top items, while `bot-state.json` prevents reposts.
+5. Discord receives the top items, while SQLite state in `bot-state.db` prevents reposts.
 
 ## Folder Structure
 
@@ -124,3 +143,4 @@ ai-news-bot/
 - The repo still uses a Discord selfbot client. That violates Discord's ToS and is operationally fragile.
 - PM2 scripts remain available, but Docker is now the preferred deployment path.
 - The AI layer now applies provider-specific request shaping for Z.AI / GLM models, including disabled thinking and JSON mode.
+- Runtime state is stored in SQLite via `better-sqlite3`, with one-time migration from legacy `bot-state.json`.
