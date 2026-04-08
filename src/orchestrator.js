@@ -1,88 +1,117 @@
 const { crawlTweets, crawlTweetsFallback } = require('./modules/crawler');
 const { filterAndSummarize } = require('./modules/ai-filter');
 const { init: initDiscord, sendNewsUpdate, destroy: destroyDiscord } = require('./modules/discord');
-const { filterDuplicate } = require('./utils/cache');
+const { filterNewTweets, filterUnpostedItems, markItemsPosted, recordRun } = require('./utils/cache');
+const { createLogger } = require('./utils/logger');
 const config = require('./config');
 const { CronJob } = require('cron');
 
 let isRunning = false;
+const logger = createLogger(config.LOG_LEVEL);
 
 async function runPipeline() {
   if (isRunning) {
-    console.log('[Pipeline] Already running, skipping...');
+    logger.warn('[Pipeline] Already running, skipping...');
     return;
   }
 
   isRunning = true;
-  console.log(`\n${'='.repeat(50)}`);
-  console.log(`[Pipeline] Starting at ${new Date().toISOString()}`);
-  console.log(`${'='.repeat(50)}\n`);
+  const runSummary = {
+    crawled: 0,
+    recent: 0,
+    newTweets: 0,
+    curated: 0,
+    posted: 0,
+    status: 'failed',
+  };
+
+  logger.info('[Pipeline] Starting run', { dryRun: config.DRY_RUN });
 
   try {
-    console.log('[Pipeline] Step 1: Crawling tweets...');
+    logger.info('[Pipeline] Step 1: Crawling tweets...');
     let tweets;
     try {
-      tweets = await crawlTweets();
+      tweets = await crawlTweets(logger);
     } catch (err) {
-      console.error('[Pipeline] Primary crawler failed, trying fallback:', err.message);
-      tweets = await crawlTweetsFallback();
+      logger.warn(`[Pipeline] Primary crawler failed, trying fallback: ${err.message}`);
+      tweets = await crawlTweetsFallback(logger);
     }
 
+    runSummary.crawled = tweets.length;
+
     if (!tweets.length) {
-      console.log('[Pipeline] No tweets found. Skipping.');
+      logger.info('[Pipeline] No tweets found. Skipping.');
+      runSummary.status = 'no_tweets';
       return;
     }
 
     const cutoff = new Date(Date.now() - config.HOURS_LOOKBACK * 60 * 60 * 1000);
-    const recentTweets = tweets.filter(t => new Date(t.createdAt) > cutoff);
-    const newTweets = filterDuplicate(recentTweets);
+    const recentTweets = tweets.filter(tweet => new Date(tweet.createdAt) > cutoff);
+    const newTweets = filterNewTweets(recentTweets, config, logger);
+
+    runSummary.recent = recentTweets.length;
+    runSummary.newTweets = newTweets.length;
 
     if (!newTweets.length) {
-      console.log('[Pipeline] No new tweets. Skipping.');
+      logger.info('[Pipeline] No new tweets. Skipping.');
+      runSummary.status = 'no_new_tweets';
       return;
     }
 
-    console.log('[Pipeline] Step 2: AI filtering & summarizing...');
-    const curated = await filterAndSummarize(newTweets);
+    logger.info('[Pipeline] Step 2: AI filtering & summarizing...');
+    const curated = filterUnpostedItems(await filterAndSummarize(newTweets, logger), config, logger);
+    runSummary.curated = curated.length;
 
     if (!curated.length) {
-      console.log('[Pipeline] No noteworthy updates found.');
+      logger.info('[Pipeline] No noteworthy updates found.');
+      runSummary.status = 'no_curated_items';
       return;
     }
 
-    console.log(`[Pipeline] Step 3: Sending ${curated.length} updates to Discord...`);
-    await sendNewsUpdate(curated);
+    logger.info(`[Pipeline] Step 3: Sending up to ${config.MAX_POSTS_PER_RUN} updates to Discord...`);
+    const postedItems = await sendNewsUpdate(curated, logger);
+    markItemsPosted(postedItems, config);
 
-    console.log('\n[Pipeline] Done! ✅\n');
+    runSummary.posted = postedItems.length;
+    runSummary.status = config.DRY_RUN ? 'dry_run' : 'success';
+    logger.info('[Pipeline] Run completed', runSummary);
   } catch (err) {
-    console.error('[Pipeline] Error:', err);
+    logger.error(`[Pipeline] Error: ${err.stack || err.message}`);
   } finally {
+    recordRun(runSummary, config);
     isRunning = false;
   }
 }
 
 async function start() {
-  console.log('🤖 AI News Bot starting...\n');
+  config.validateConfig();
+  logger.info('[Startup] AI News Bot starting', {
+    schedule: config.SCHEDULE_CRON,
+    timezone: config.TIMEZONE,
+    dryRun: config.DRY_RUN,
+  });
 
-  await initDiscord();
+  await initDiscord(logger);
 
-  console.log(`[Scheduler] Running every: ${config.SCHEDULE_CRON}`);
+  logger.info(`[Scheduler] Running every: ${config.SCHEDULE_CRON}`);
 
   const job = new CronJob(
     config.SCHEDULE_CRON,
     runPipeline,
     null,
     true,
-    'Asia/Ho_Chi_Minh'
+    config.TIMEZONE
   );
 
-  console.log('[Scheduler] Next run:', job.nextDate().toJSDate().toLocaleString('vi-VN'));
-  console.log('\nBot is running. Press Ctrl+C to stop.\n');
+  logger.info('[Scheduler] Next run', {
+    nextRun: job.nextDate().toJSDate().toLocaleString('vi-VN', { timeZone: config.TIMEZONE }),
+  });
+  logger.info('[Startup] Bot is running. Press Ctrl+C to stop.');
 
   await runPipeline();
 
   process.on('SIGINT', async () => {
-    console.log('\nShutting down...');
+    logger.info('[Shutdown] Stopping bot...');
     job.stop();
     await destroyDiscord();
     process.exit(0);

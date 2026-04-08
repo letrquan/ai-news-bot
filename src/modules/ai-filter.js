@@ -6,9 +6,20 @@ const openai = new OpenAI({
   baseURL: config.OPENAI_BASE_URL,
 });
 
-async function filterAndSummarize(tweets) {
+function extractJsonArray(content) {
+  const trimmed = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+  const match = trimmed.match(/\[[\s\S]*\]/);
+
+  if (!match) {
+    throw new Error('Model response did not contain a JSON array');
+  }
+
+  return JSON.parse(match[0]);
+}
+
+async function filterAndSummarize(tweets, logger = console) {
   if (!tweets.length) {
-    console.log('[AI Filter] No tweets to process');
+    logger.info('[AI Filter] No tweets to process');
     return [];
   }
 
@@ -30,6 +41,8 @@ INSTRUCTIONS:
 2. Keep: real announcements, research papers, product launches, industry moves, insightful analysis
 3. Score each kept tweet 1-10 on importance
 4. Return ONLY a JSON array (no markdown fences, no explanation)
+5. Prefer fewer high-signal items over many mediocre ones
+6. Ignore duplicate coverage of the same story unless the tweet adds materially new information
 
 Format:
 [
@@ -55,21 +68,19 @@ Return empty array [] if nothing is noteworthy. Sort by importance descending.`;
       max_tokens: 2000,
     });
 
-    let content = response.choices[0].message.content.trim();
-    content = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-
-    const results = JSON.parse(content);
-    console.log(`[AI Filter] Kept ${results.length}/${tweets.length} tweets`);
+    const content = response.choices[0].message.content.trim();
+    const results = extractJsonArray(content);
+    logger.info(`[AI Filter] Kept ${results.length}/${tweets.length} tweets before post-filtering`);
 
     return results
-      .map(r => ({
-        ...r,
-        tweet: tweets[r.index - 1],
+      .map(result => ({
+        ...result,
+        tweet: tweets[result.index - 1],
       }))
-      .filter(r => r.tweet)
+      .filter(result => result.tweet && Number.isFinite(result.importance) && result.importance >= config.MIN_IMPORTANCE)
       .sort((a, b) => b.importance - a.importance);
   } catch (err) {
-    console.error('[AI Filter] Error:', err.message);
+    logger.error(`[AI Filter] Error: ${err.message}`);
     return [];
   }
 }

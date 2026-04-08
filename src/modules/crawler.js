@@ -65,8 +65,10 @@ function buildHeaders() {
   };
 }
 
-async function fetchTimeline(endpoint) {
+async function fetchTimeline(endpoint, logger = console) {
   const headers = buildHeaders();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.REQUEST_TIMEOUT_MS);
 
   const variables = {
     count: config.TWITTER_MAX_RESULTS,
@@ -82,29 +84,40 @@ async function fetchTimeline(endpoint) {
   });
 
   const url = `${GRAPHQL_BASE}/${endpoint.queryId}/${endpoint.operationName}?${params}`;
-  const res = await fetch(url, { headers });
+  logger.debug(`[Crawler] Fetching ${endpoint.operationName}`);
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Timeline ${endpoint.operationName} failed: ${res.status} - ${text.slice(0, 300)}`);
+  try {
+    const res = await fetch(url, { headers, signal: controller.signal });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Timeline ${endpoint.operationName} failed: ${res.status} - ${text.slice(0, 300)}`);
+    }
+
+    return res.json();
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return res.json();
 }
 
-async function crawlTweets() {
-  console.log('[Crawler] Fetching Home Timeline (your FYP)...');
+async function crawlTweets(logger = console) {
+  logger.info('[Crawler] Fetching Home Timeline (your FYP)...');
 
   let data;
   try {
-    data = await fetchTimeline(HOME_TIMELINE);
+    data = await fetchTimeline(HOME_TIMELINE, logger);
   } catch (err) {
-    console.error(`[Crawler] HomeTimeline failed: ${err.message}`);
-    console.log('[Crawler] Trying HomeLatestTimeline...');
-    data = await fetchTimeline(HOME_LATEST);
+    logger.warn(`[Crawler] HomeTimeline failed: ${err.message}`);
+    logger.info('[Crawler] Trying HomeLatestTimeline...');
+    data = await fetchTimeline(HOME_LATEST, logger);
   }
 
-  return parseTimelineTweets(data);
+  const tweets = parseTimelineTweets(data);
+  const filteredTweets = filterTimelineTweets(tweets, config);
+  const rankedTweets = rankTweets(filteredTweets, config);
+
+  logger.info(`[Crawler] Found ${rankedTweets.length} usable tweets from timeline`);
+  return rankedTweets;
 }
 
 function parseTimelineTweets(data) {
@@ -160,7 +173,7 @@ function parseTimelineTweets(data) {
 
     tweets.push({
       id: tweet?.rest_id || entry.entryId,
-      text: text,
+      text,
       url: `https://x.com/${userLegacy.screen_name}/status/${tweet?.rest_id}`,
       author: userLegacy.screen_name || 'unknown',
       authorName: userLegacy.name || 'Unknown',
@@ -175,12 +188,62 @@ function parseTimelineTweets(data) {
     });
   }
 
-  console.log(`[Crawler] Found ${tweets.length} tweets from timeline`);
-  return tweets;
+  return dedupeById(tweets);
 }
 
-async function crawlTweetsFallback() {
-  return crawlTweets();
+function filterTimelineTweets(tweets, currentConfig) {
+  const blockedAccounts = new Set(currentConfig.BLOCKED_ACCOUNTS.map(item => item.toLowerCase()));
+  const spamPatterns = ['follow me', 'giveaway', 'airdrop', 'gm ', 'good morning'];
+
+  return tweets.filter(tweet => {
+    if (!tweet.text || tweet.lang !== 'en') {
+      return false;
+    }
+
+    if (blockedAccounts.has(tweet.author.toLowerCase())) {
+      return false;
+    }
+
+    const normalized = tweet.text.toLowerCase();
+    return !spamPatterns.some(pattern => normalized.includes(pattern));
+  });
+}
+
+function rankTweets(tweets, currentConfig) {
+  const priorityAccounts = new Set(currentConfig.PRIORITY_ACCOUNTS.map(item => item.toLowerCase()));
+
+  return tweets
+    .map(tweet => ({
+      ...tweet,
+      sortScore:
+        (priorityAccounts.has(tweet.author.toLowerCase()) ? 1000 : 0) +
+        tweet.likes +
+        tweet.retweets * 2 +
+        tweet.replies * 1.5 +
+        Number(tweet.views || 0) / 100,
+    }))
+    .sort((a, b) => b.sortScore - a.sortScore);
+}
+
+function dedupeById(tweets) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const tweet of tweets) {
+    if (seen.has(tweet.id)) {
+      continue;
+    }
+
+    seen.add(tweet.id);
+    deduped.push(tweet);
+  }
+
+  return deduped;
+}
+
+async function crawlTweetsFallback(logger = console) {
+  logger.info('[Crawler] Fallback uses the same timeline flow');
+  return crawlTweets(logger);
 }
 
 module.exports = { crawlTweets, crawlTweetsFallback };

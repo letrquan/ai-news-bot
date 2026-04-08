@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "seenTweets": {
+    "2041927687460024721": 1775670044306,
+    "2041912812637966552": 1775670044306,
+    "2041909110984339573": 1775670044306,
+    "2041900381350117648": 1775670044306
+  },
+  "postedTweets": {
+    "2041927687460024721": 1775669989367,
+    "2041912812637966552": 1775669989367
+  },
+  "runs": [
+    {
+      "crawled": 0,
+      "recent": 0,
+      "newTweets": 0,
+      "curated": 0,
+      "posted": 0,
+      "status": "failed",
+      "timestamp": "2026-04-08T17:39:02.536Z"
+    },
+    {
+      "crawled": 33,
+      "recent": 4,
+      "newTweets": 4,
+      "curated": 2,
+      "posted": 2,
+      "status": "dry_run",
+      "timestamp": "2026-04-08T17:39:49.367Z"
+    },
+    {
+      "crawled": 0,
+      "recent": 0,
+      "newTweets": 0,
+      "curated": 0,
+      "posted": 0,
+      "status": "failed",
+      "timestamp": "2026-04-08T17:40:00.039Z"
+    },
+    {
+      "crawled": 33,
+      "recent": 4,
+      "newTweets": 0,
+      "curated": 0,
+      "posted": 0,
+      "status": "no_new_tweets",
+      "timestamp": "2026-04-08T17:40:01.607Z"
+    },
+    {
+      "crawled": 33,
+      "recent": 4,
+      "newTweets": 0,
+      "curated": 0,
+      "posted": 0,
+      "status": "no_new_tweets",
+      "timestamp": "2026-04-08T17:40:44.308Z"
+    }
+  ]
+}
