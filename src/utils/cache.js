@@ -50,6 +50,15 @@ function initializeSchema(db) {
       timestamp TEXT NOT NULL,
       summary_json TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS semantic_memory (
+      item_id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      url TEXT NOT NULL,
+      content TEXT NOT NULL,
+      embedding_json TEXT NOT NULL,
+      sent_at INTEGER NOT NULL
+    );
   `);
 
   db.prepare(`
@@ -146,10 +155,12 @@ function getDb(config) {
   return db;
 }
 
-function pruneState(db, now = Date.now()) {
+function pruneState(db, config, now = Date.now()) {
   const cutoff = now - MAX_AGE_MS;
+  const semanticCutoff = now - config.SEMANTIC_MEMORY_MAX_AGE_HOURS * 60 * 60 * 1000;
   db.prepare('DELETE FROM seen_items WHERE seen_at < ?').run(cutoff);
   db.prepare('DELETE FROM posted_items WHERE posted_at < ?').run(cutoff);
+  db.prepare('DELETE FROM semantic_memory WHERE sent_at < ?').run(semanticCutoff);
 
   const runCount = db.prepare('SELECT COUNT(*) AS count FROM runs').get().count;
   const excessRuns = runCount - MAX_RUN_HISTORY;
@@ -168,7 +179,7 @@ function pruneState(db, now = Date.now()) {
 function filterNewItems(items, config, logger = console) {
   const db = getDb(config);
   const now = Date.now();
-  pruneState(db, now);
+  pruneState(db, config, now);
 
   const findSeen = db.prepare('SELECT 1 FROM seen_items WHERE item_id = ?');
   const upsertSeen = db.prepare(`
@@ -197,7 +208,7 @@ function filterNewItems(items, config, logger = console) {
 
 function filterUnpostedItems(items, config, logger = console) {
   const db = getDb(config);
-  pruneState(db);
+  pruneState(db, config);
 
   const findPosted = db.prepare('SELECT 1 FROM posted_items WHERE item_id = ?');
   const unpostedItems = items.filter(item => !findPosted.get(item.item.id));
@@ -216,7 +227,7 @@ function markItemsPosted(items, config) {
 
   const db = getDb(config);
   const now = Date.now();
-  pruneState(db, now);
+  pruneState(db, config, now);
 
   const upsertPosted = db.prepare(`
     INSERT INTO posted_items (item_id, posted_at)
@@ -233,19 +244,19 @@ function markItemsPosted(items, config) {
 
 function recordRun(summary, config) {
   const db = getDb(config);
-  pruneState(db);
+  pruneState(db, config);
 
   db.prepare(`
     INSERT INTO runs (timestamp, summary_json)
     VALUES (?, ?)
   `).run(new Date().toISOString(), JSON.stringify(summary));
 
-  pruneState(db);
+  pruneState(db, config);
 }
 
 function readState(config) {
   const db = getDb(config);
-  pruneState(db);
+  pruneState(db, config);
 
   const seenItems = Object.fromEntries(
     db.prepare('SELECT item_id, seen_at FROM seen_items').all().map(row => [row.item_id, row.seen_at])
@@ -269,10 +280,69 @@ function readState(config) {
   };
 }
 
+function getRecentSemanticMemory(config) {
+  const db = getDb(config);
+  pruneState(db, config);
+
+  return db.prepare(`
+    SELECT item_id, title, url, content, embedding_json, sent_at
+    FROM semantic_memory
+    ORDER BY sent_at DESC
+  `).all().map(row => ({
+    itemId: row.item_id,
+    title: row.title,
+    url: row.url,
+    content: row.content,
+    embedding: JSON.parse(row.embedding_json),
+    sentAt: row.sent_at,
+  }));
+}
+
+function storeSemanticMemory(items, config) {
+  if (!items.length) {
+    return;
+  }
+
+  const db = getDb(config);
+  const now = Date.now();
+  pruneState(db, config, now);
+
+  const upsertSemantic = db.prepare(`
+    INSERT INTO semantic_memory (item_id, title, url, content, embedding_json, sent_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(item_id) DO UPDATE SET
+      title = excluded.title,
+      url = excluded.url,
+      content = excluded.content,
+      embedding_json = excluded.embedding_json,
+      sent_at = excluded.sent_at
+  `);
+
+  db.transaction(postedItems => {
+    for (const result of postedItems) {
+      const item = result.item;
+      if (!Array.isArray(item.semanticEmbedding) || !item.semanticEmbedding.length) {
+        continue;
+      }
+
+      upsertSemantic.run(
+        item.id,
+        item.title || '',
+        item.url || '',
+        item.semanticText || item.text || item.title || '',
+        JSON.stringify(item.semanticEmbedding),
+        now
+      );
+    }
+  })(items);
+}
+
 module.exports = {
   filterNewItems,
   filterUnpostedItems,
+  getRecentSemanticMemory,
   markItemsPosted,
   readState,
   recordRun,
+  storeSemanticMemory,
 };

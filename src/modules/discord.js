@@ -1,60 +1,12 @@
-const { Client, Intents, MessageEmbed } = require('discord.js-selfbot-v13');
 const config = require('../config');
-
-let client = null;
 
 async function init(logger = console) {
   if (config.DRY_RUN) {
-    logger.info('[Discord] DRY_RUN enabled, skipping Discord login');
-    return null;
+    logger.info('[Discord] DRY_RUN enabled, skipping webhook validation');
+    return;
   }
 
-  client = new Client({ intents: [Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES] });
-
-  client.on('ready', () => {
-    logger.info(`[Discord] Logged in as ${client.user.tag}`);
-  });
-
-  await client.login(config.DISCORD_TOKEN);
-  return client;
-}
-
-function formatMetrics(item) {
-  const metrics = [];
-
-  if (item.score) metrics.push(`⬆️ ${item.score}`);
-  if (item.comments) metrics.push(`💬 ${item.comments}`);
-  if (item.reactions) metrics.push(`🔁 ${item.reactions}`);
-  if (item.views) metrics.push(`👀 ${item.views}`);
-
-  return metrics.join(' · ') || 'n/a';
-}
-
-function formatNewsItem(result) {
-  const item = result.item;
-  const categoryEmoji = {
-    Research: '🔬',
-    Product: '🚀',
-    Industry: '🏢',
-    Regulation: '⚖️',
-    'Open Source': '🔓',
-    Other: '📌',
-  };
-
-  const emoji = categoryEmoji[result.category] || '📌';
-  const stars = '⭐'.repeat(Math.min(result.importance, 5));
-
-  return {
-    embed: new MessageEmbed()
-      .setColor(result.importance >= 8 ? 0xFF4500 : result.importance >= 6 ? 0xFFA500 : 0x5865F2)
-      .setTitle(`${emoji} ${result.title}`)
-      .setDescription(result.summary)
-      .addField('Source', `${item.sourceLabel} · ${item.author}`, true)
-      .addField('Impact', `${stars} (${result.importance}/10)`, true)
-      .addField('Signals', formatMetrics(item), true)
-      .setURL(item.url)
-      .setTimestamp(new Date(item.createdAt)),
-  };
+  logger.info('[Discord] Webhook delivery enabled');
 }
 
 function formatDryRun(items) {
@@ -69,6 +21,29 @@ function formatDryRun(items) {
   }));
 }
 
+function buildWebhookBody(payload) {
+  return {
+    username: config.DISCORD_WEBHOOK_USERNAME || undefined,
+    avatar_url: config.DISCORD_WEBHOOK_AVATAR_URL || undefined,
+    ...payload,
+  };
+}
+
+async function postWebhook(payload) {
+  const response = await fetch(config.DISCORD_WEBHOOK_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(buildWebhookBody(payload)),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Webhook post failed: ${response.status} ${text.slice(0, 300)}`);
+  }
+}
+
 async function sendNewsUpdate(items, logger = console) {
   if (config.DRY_RUN) {
     logger.info('[Discord] DRY_RUN payload ready', {
@@ -78,37 +53,21 @@ async function sendNewsUpdate(items, logger = console) {
     return items.slice(0, config.MAX_POSTS_PER_RUN);
   }
 
-  if (!client) throw new Error('Discord client not initialized');
-
-  const channel = await client.channels.fetch(config.DISCORD_CHANNEL_ID);
-  if (!channel) throw new Error(`Channel ${config.DISCORD_CHANNEL_ID} not found`);
-
   const timestamp = new Date().toLocaleString('vi-VN', { timeZone: config.TIMEZONE });
   const postedItems = [];
   const itemsToPost = items.slice(0, config.MAX_POSTS_PER_RUN);
 
-  await channel.send(`🔥 **AI NEWS UPDATE** — ${timestamp} 🔥\n_Found ${itemsToPost.length} important updates across ${config.ENABLED_SOURCES.join(', ')}_\n`);
+  await postWebhook({
+    content: `🔥 **AI NEWS UPDATE** — ${timestamp} 🔥\nFound ${itemsToPost.length} important updates across ${config.ENABLED_SOURCES.join(', ')}`,
+  });
 
   for (const result of itemsToPost) {
     try {
-      const { embed } = formatNewsItem(result);
-      await channel.send({
-        content: result.item.url,
-        embeds: [embed],
-      });
+      await postWebhook({ content: result.item.url });
       postedItems.push(result);
       await sleep(800);
     } catch (err) {
-      logger.error(`[Discord] Failed to send embed item: ${err.message}`);
-
-      try {
-        await channel.send(
-          `**${result.title}**\n${result.summary}\nSource: ${result.item.sourceLabel} · ${result.item.url}\nImpact: ${result.importance}/10`
-        );
-        postedItems.push(result);
-      } catch (fallbackErr) {
-        logger.error(`[Discord] Fallback plain-text send failed: ${fallbackErr.message}`);
-      }
+      logger.error(`[Discord] Failed to send item link: ${err.message}`);
     }
   }
 
@@ -119,12 +78,6 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function destroy() {
-  if (client) {
-    await client.destroy();
-    client = null;
-    console.log('[Discord] Disconnected');
-  }
-}
+async function destroy() {}
 
 module.exports = { init, sendNewsUpdate, destroy };

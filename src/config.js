@@ -19,8 +19,9 @@ function splitCsv(value, fallback) {
 }
 
 const config = {
-  DISCORD_TOKEN: process.env.DISCORD_TOKEN,
-  DISCORD_CHANNEL_ID: process.env.DISCORD_CHANNEL_ID,
+  DISCORD_WEBHOOK_URL: process.env.DISCORD_WEBHOOK_URL,
+  DISCORD_WEBHOOK_USERNAME: process.env.DISCORD_WEBHOOK_USERNAME,
+  DISCORD_WEBHOOK_AVATAR_URL: process.env.DISCORD_WEBHOOK_AVATAR_URL,
 
   X_AUTH_TOKEN: process.env.X_AUTH_TOKEN,
   X_CT0: process.env.X_CT0,
@@ -28,8 +29,16 @@ const config = {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_MODEL: process.env.OPENAI_MODEL || 'glm-5.1',
+  OPENAI_EMBEDDING_API_KEY: process.env.OPENAI_EMBEDDING_API_KEY,
+  OPENAI_EMBEDDING_BASE_URL: process.env.OPENAI_EMBEDDING_BASE_URL,
+  OPENAI_EMBEDDING_MODEL: process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small',
   AI_PROVIDER: process.env.AI_PROVIDER || 'auto',
   AI_MAX_INPUT_ITEMS: parseInteger(process.env.AI_MAX_INPUT_ITEMS, 8),
+  SEMANTIC_DEDUPE_ENABLED: parseBoolean(process.env.SEMANTIC_DEDUPE_ENABLED, true),
+  SEMANTIC_SIMILARITY_THRESHOLD: Number.parseFloat(process.env.SEMANTIC_SIMILARITY_THRESHOLD || '0.85'),
+  SEMANTIC_MEMORY_MAX_AGE_HOURS: parseInteger(process.env.SEMANTIC_MEMORY_MAX_AGE_HOURS, 168),
+  SEMANTIC_EMBEDDING_BATCH_SIZE: parseInteger(process.env.SEMANTIC_EMBEDDING_BATCH_SIZE, 20),
+  SEMANTIC_EMBEDDING_MAX_CHARS: parseInteger(process.env.SEMANTIC_EMBEDDING_MAX_CHARS, 2000),
 
   ENABLED_SOURCES: splitCsv(process.env.ENABLED_SOURCES, 'x,hackernews,reddit,rss'),
   X_MAX_RESULTS: parseInteger(process.env.X_MAX_RESULTS || process.env.TWITTER_MAX_RESULTS, 20),
@@ -71,8 +80,7 @@ function validateConfig() {
   }
 
   if (!config.DRY_RUN) {
-    if (!config.DISCORD_TOKEN) missing.push('DISCORD_TOKEN');
-    if (!config.DISCORD_CHANNEL_ID) missing.push('DISCORD_CHANNEL_ID');
+    if (!config.DISCORD_WEBHOOK_URL) missing.push('DISCORD_WEBHOOK_URL');
   }
 
   if (!config.ENABLED_SOURCES.length) {
@@ -97,6 +105,14 @@ function validateConfig() {
 
   if (config.AI_MAX_INPUT_ITEMS <= 0) {
     throw new Error('AI_MAX_INPUT_ITEMS must be greater than 0');
+  }
+
+  if (Number.isNaN(config.SEMANTIC_SIMILARITY_THRESHOLD) || config.SEMANTIC_SIMILARITY_THRESHOLD <= 0 || config.SEMANTIC_SIMILARITY_THRESHOLD > 1) {
+    throw new Error('SEMANTIC_SIMILARITY_THRESHOLD must be between 0 and 1');
+  }
+
+  if (config.SEMANTIC_MEMORY_MAX_AGE_HOURS <= 0) {
+    throw new Error('SEMANTIC_MEMORY_MAX_AGE_HOURS must be greater than 0');
   }
 
   if (missing.length) {

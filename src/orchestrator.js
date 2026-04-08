@@ -1,7 +1,8 @@
 const { collectNewsItems } = require('./modules/sources');
 const { filterAndSummarize } = require('./modules/ai-filter');
+const { filterSemanticDuplicates } = require('./modules/semantic-dedupe');
 const { init: initDiscord, sendNewsUpdate, destroy: destroyDiscord } = require('./modules/discord');
-const { filterNewItems, filterUnpostedItems, markItemsPosted, recordRun } = require('./utils/cache');
+const { filterNewItems, filterUnpostedItems, markItemsPosted, recordRun, storeSemanticMemory } = require('./utils/cache');
 const { createLogger } = require('./utils/logger');
 const config = require('./config');
 const { CronJob } = require('cron');
@@ -20,6 +21,7 @@ async function runPipeline() {
     crawled: 0,
     recent: 0,
     newItems: 0,
+    semanticSkipped: 0,
     curated: 0,
     posted: 0,
     status: 'failed',
@@ -54,8 +56,18 @@ async function runPipeline() {
       return;
     }
 
+    logger.info('[Pipeline] Step 1b: Semantic deduplication...');
+    const semanticResult = await filterSemanticDuplicates(newItems, logger);
+    runSummary.semanticSkipped = semanticResult.skipped;
+
+    if (!semanticResult.items.length) {
+      logger.info('[Pipeline] All new items were semantically duplicated. Skipping.');
+      runSummary.status = 'all_semantic_duplicates';
+      return;
+    }
+
     logger.info('[Pipeline] Step 2: AI filtering & summarizing...');
-    const curated = filterUnpostedItems(await filterAndSummarize(newItems, logger), config, logger);
+    const curated = filterUnpostedItems(await filterAndSummarize(semanticResult.items, logger), config, logger);
     runSummary.curated = curated.length;
 
     if (!curated.length) {
@@ -67,6 +79,7 @@ async function runPipeline() {
     logger.info(`[Pipeline] Step 3: Sending up to ${config.MAX_POSTS_PER_RUN} updates to Discord...`);
     const postedItems = await sendNewsUpdate(curated, logger);
     markItemsPosted(postedItems, config);
+    storeSemanticMemory(postedItems, config);
 
     runSummary.posted = postedItems.length;
     runSummary.status = config.DRY_RUN ? 'dry_run' : 'success';

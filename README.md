@@ -1,6 +1,6 @@
 # AI News Discord Bot
 
-Automated AI news pipeline: **multi-source collection -> OpenAI-compatible curation -> Discord delivery**
+Automated AI news pipeline: **multi-source collection -> OpenAI-compatible curation -> Discord webhook delivery**
 
 ## Sources
 
@@ -25,7 +25,7 @@ Automated AI news pipeline: **multi-source collection -> OpenAI-compatible curat
 └──────┬───────┘
        ▼
 ┌──────────────┐
-│   Discord    │  Digest embeds
+│   Discord    │  Webhook digest embeds
 └──────────────┘
 ```
 
@@ -60,6 +60,12 @@ Safe one-shot test:
 npm run run-now:dry
 ```
 
+Reset local cache/state:
+
+```bash
+npm run reset-cache
+```
+
 ## Docker Deployment
 
 Build and run:
@@ -82,6 +88,12 @@ Run one immediate update inside Docker and exit:
 npm run docker:run-now
 ```
 
+Reset Docker-mounted cache/state:
+
+```bash
+npm run docker:reset-cache
+```
+
 ## Important Config
 
 | Variable | Default | Description |
@@ -97,6 +109,9 @@ npm run docker:run-now
 | `MAX_POSTS_PER_RUN` | `10` | Maximum items posted per run |
 | `AI_PROVIDER` | `auto` | `auto`, `zai`, or another OpenAI-compatible provider label |
 | `AI_MAX_INPUT_ITEMS` | `8` | Cap items sent to the model per curation request |
+| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model used for semantic dedupe |
+| `SEMANTIC_DEDUPE_ENABLED` | `true` | Enable embedding-based same-story filtering |
+| `SEMANTIC_SIMILARITY_THRESHOLD` | `0.85` | Skip items above this cosine similarity |
 | `DRY_RUN` | `false` | Skip Discord posting and log the digest |
 | `RUN_ONCE` | `false` | Run a single immediate update and exit |
 | `STATE_FILE` | `bot-state.db` | Persistent SQLite state file |
@@ -107,7 +122,7 @@ If `x` is enabled in `ENABLED_SOURCES`, `X_AUTH_TOKEN` and `X_CT0` are required.
 
 1. Each enabled source crawler fetches items independently.
 2. The aggregator normalizes them into one item format.
-3. The pipeline deduplicates, ranks, and drops stale items.
+3. The pipeline deduplicates by ID, semantically removes same-story duplicates, ranks, and drops stale items.
 4. The model selects the strongest stories and writes short summaries.
 5. Discord receives the top items, while SQLite state in `bot-state.db` prevents reposts.
 
@@ -140,7 +155,8 @@ ai-news-bot/
 ## Notes
 
 - `DRY_RUN=true` exercises the full collection and curation pipeline without sending to Discord.
-- The repo still uses a Discord selfbot client. That violates Discord's ToS and is operationally fragile.
+- Delivery uses an incoming Discord webhook URL, which is stateless and supported by Discord.
 - PM2 scripts remain available, but Docker is now the preferred deployment path.
 - The AI layer now applies provider-specific request shaping for Z.AI / GLM models, including disabled thinking and JSON mode.
 - Runtime state is stored in SQLite via `better-sqlite3`, with one-time migration from legacy `bot-state.json`.
+- Semantic dedupe uses `text-embedding-3-small` against recently posted items. For Z.AI chat setups, set a real `OPENAI_EMBEDDING_API_KEY` to enable it.
