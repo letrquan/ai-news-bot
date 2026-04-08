@@ -1,0 +1,28 @@
+{
+  "name": "ai-news-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node -r dotenv/config index.js",
+    "dev": "node -r dotenv/config index.js",
+    "pm2:start": "pm2 start start.sh --name ai-news-bot --interpreter bash && pm2 save",
+    "pm2:stop": "pm2 stop ai-news-bot",
+    "pm2:restart": "pm2 restart ai-news-bot",
+    "pm2:logs": "pm2 logs ai-news-bot",
+    "pm2:kill": "pm2 delete ai-news-bot && pm2 kill",
+    "release": "npm start"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "apify-client": "^2.22.3",
+    "chalk": "^5.6.2",
+    "cron": "^4.4.0",
+    "discord.js-selfbot-v13": "^3.7.1",
+    "dotenv": "^17.4.1",
+    "openai": "^6.33.0"
+  }
+}
