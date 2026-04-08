@@ -8,41 +8,111 @@ const openai = new OpenAI({
 
 function extractJsonArray(content) {
   const trimmed = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+
+  try {
+    const parsed = JSON.parse(trimmed);
+
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+
+    if (Array.isArray(parsed.items)) {
+      return parsed.items;
+    }
+
+    if (Array.isArray(parsed.results)) {
+      return parsed.results;
+    }
+  } catch {}
+
   const match = trimmed.match(/\[[\s\S]*\]/);
 
   if (!match) {
     throw new Error('Model response did not contain a JSON array');
   }
 
-  return JSON.parse(match[0]);
+  const parsedArray = JSON.parse(match[0]);
+  if (Array.isArray(parsedArray)) {
+    return parsedArray;
+  }
+
+  throw new Error('Model response array parse failed');
 }
 
-async function filterAndSummarize(tweets, logger = console) {
-  if (!tweets.length) {
-    logger.info('[AI Filter] No tweets to process');
+async function repairJsonArray(rawContent) {
+  const response = await openai.chat.completions.create({
+    model: config.OPENAI_MODEL,
+    messages: [
+      { role: 'system', content: 'Convert the user content into valid JSON only. Return either a JSON array or an object with an "items" array. No markdown.' },
+      { role: 'user', content: rawContent },
+    ],
+    temperature: 0,
+    max_tokens: 1600,
+  });
+
+  return extractJsonArray(response.choices[0].message.content.trim());
+}
+
+function buildFallbackResults(items, logger = console) {
+  logger.warn('[AI Filter] Falling back to deterministic local curation');
+
+  return items
+    .slice(0, config.MAX_POSTS_PER_RUN)
+    .map((item, index) => ({
+      index: index + 1,
+      title: item.title,
+      summary: item.text.slice(0, 220) || item.title,
+      importance: Math.max(config.MIN_IMPORTANCE, Math.min(8, Math.round((item.sortScore || 0) / 50) + config.MIN_IMPORTANCE)),
+      category: item.source === 'rss' ? 'Product' : item.source === 'hackernews' ? 'Industry' : 'Other',
+      item,
+    }));
+}
+
+function renderMetrics(item) {
+  const metrics = [];
+
+  if (item.score) metrics.push(`score=${item.score}`);
+  if (item.comments) metrics.push(`comments=${item.comments}`);
+  if (item.reactions) metrics.push(`reactions=${item.reactions}`);
+  if (item.views) metrics.push(`views=${item.views}`);
+
+  return metrics.join(', ') || 'none';
+}
+
+async function filterAndSummarize(items, logger = console) {
+  if (!items.length) {
+    logger.info('[AI Filter] No items to process');
     return [];
   }
 
-  const tweetsText = tweets.map((t, i) => {
-    const engagement = `❤️${t.likes} 🔁${t.retweets} 💬${t.replies}`;
-    return `[${i + 1}] @${t.author}: "${t.text}"\n    ${engagement}\n    URL: ${t.url}\n    Posted: ${t.createdAt}`;
+  const itemsText = items.map((item, index) => {
+    return [
+      `[${index + 1}] Source=${item.sourceLabel}`,
+      `Title: ${item.title}`,
+      `Author: ${item.author}`,
+      `Created: ${item.createdAt}`,
+      `Metrics: ${renderMetrics(item)}`,
+      `URL: ${item.url}`,
+      `Body: ${item.text}`,
+    ].join('\n');
   }).join('\n\n');
 
-  const prompt = `You are an expert AI/tech news curator. Your job is to filter and summarize the most important tweets.
+  const prompt = `You are an expert AI/tech news curator. Your job is to filter and summarize the most important items from multiple sources.
 
 USER PREFERENCES:
 ${config.FILTER_PROMPT}
 
-RAW TWEETS:
-${tweetsText}
+RAW ITEMS:
+${itemsText}
 
 INSTRUCTIONS:
-1. Filter OUT: spam, memes without substance, vague hype, engagement farming, crypto shilling
-2. Keep: real announcements, research papers, product launches, industry moves, insightful analysis
-3. Score each kept tweet 1-10 on importance
-4. Return ONLY a JSON array (no markdown fences, no explanation)
-5. Prefer fewer high-signal items over many mediocre ones
-6. Ignore duplicate coverage of the same story unless the tweet adds materially new information
+1. Filter OUT: spam, memes without substance, vague hype, reposted chatter, low-signal personal updates
+2. Keep: real announcements, research papers, product launches, significant industry moves, insightful analysis
+3. Prefer original sources and substantive writeups over reactions
+4. Score each kept item 1-10 on importance
+5. Return ONLY a JSON array
+6. Prefer fewer high-signal items over many mediocre ones
+7. Ignore duplicate coverage of the same story unless the item adds materially new information
 
 Format:
 [
@@ -69,19 +139,27 @@ Return empty array [] if nothing is noteworthy. Sort by importance descending.`;
     });
 
     const content = response.choices[0].message.content.trim();
-    const results = extractJsonArray(content);
-    logger.info(`[AI Filter] Kept ${results.length}/${tweets.length} tweets before post-filtering`);
+    let results;
+
+    try {
+      results = extractJsonArray(content);
+    } catch (parseErr) {
+      logger.warn(`[AI Filter] Primary parse failed, attempting repair: ${parseErr.message}`);
+      results = await repairJsonArray(content);
+    }
+
+    logger.info(`[AI Filter] Kept ${results.length}/${items.length} items before post-filtering`);
 
     return results
       .map(result => ({
         ...result,
-        tweet: tweets[result.index - 1],
+        item: items[result.index - 1],
       }))
-      .filter(result => result.tweet && Number.isFinite(result.importance) && result.importance >= config.MIN_IMPORTANCE)
+      .filter(result => result.item && Number.isFinite(result.importance) && result.importance >= config.MIN_IMPORTANCE)
       .sort((a, b) => b.importance - a.importance);
   } catch (err) {
     logger.error(`[AI Filter] Error: ${err.message}`);
-    return [];
+    return buildFallbackResults(items, logger);
   }
 }
 

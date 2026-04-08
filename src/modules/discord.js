@@ -19,7 +19,19 @@ async function init(logger = console) {
   return client;
 }
 
-function formatNewsItem(item) {
+function formatMetrics(item) {
+  const metrics = [];
+
+  if (item.score) metrics.push(`⬆️ ${item.score}`);
+  if (item.comments) metrics.push(`💬 ${item.comments}`);
+  if (item.reactions) metrics.push(`🔁 ${item.reactions}`);
+  if (item.views) metrics.push(`👀 ${item.views}`);
+
+  return metrics.join(' · ') || 'n/a';
+}
+
+function formatNewsItem(result) {
+  const item = result.item;
   const categoryEmoji = {
     Research: '🔬',
     Product: '🚀',
@@ -29,31 +41,31 @@ function formatNewsItem(item) {
     Other: '📌',
   };
 
-  const emoji = categoryEmoji[item.category] || '📌';
-  const stars = '⭐'.repeat(Math.min(item.importance, 5));
-  const engagement = `❤️ ${item.tweet.likes} · 🔁 ${item.tweet.retweets} · 💬 ${item.tweet.replies}`;
+  const emoji = categoryEmoji[result.category] || '📌';
+  const stars = '⭐'.repeat(Math.min(result.importance, 5));
 
   return {
     embed: new MessageEmbed()
-      .setColor(item.importance >= 8 ? 0xFF4500 : item.importance >= 6 ? 0xFFA500 : 0x5865F2)
-      .setTitle(`${emoji} ${item.title}`)
-      .setDescription(item.summary)
-      .addField('Source', `[@${item.tweet.author}](https://x.com/${item.tweet.author})`, true)
-      .addField('Impact', `${stars} (${item.importance}/10)`, true)
-      .addField('Engagement', engagement, true)
-      .setURL(item.tweet.url)
-      .setTimestamp(new Date(item.tweet.createdAt)),
+      .setColor(result.importance >= 8 ? 0xFF4500 : result.importance >= 6 ? 0xFFA500 : 0x5865F2)
+      .setTitle(`${emoji} ${result.title}`)
+      .setDescription(result.summary)
+      .addField('Source', `${item.sourceLabel} · ${item.author}`, true)
+      .addField('Impact', `${stars} (${result.importance}/10)`, true)
+      .addField('Signals', formatMetrics(item), true)
+      .setURL(item.url)
+      .setTimestamp(new Date(item.createdAt)),
   };
 }
 
 function formatDryRun(items) {
-  return items.map((item, index) => ({
+  return items.map((result, index) => ({
     order: index + 1,
-    title: item.title,
-    importance: item.importance,
-    category: item.category,
-    author: item.tweet.author,
-    url: item.tweet.url,
+    title: result.title,
+    importance: result.importance,
+    category: result.category,
+    source: result.item.sourceLabel,
+    author: result.item.author,
+    url: result.item.url,
   }));
 }
 
@@ -75,25 +87,25 @@ async function sendNewsUpdate(items, logger = console) {
   const postedItems = [];
   const itemsToPost = items.slice(0, config.MAX_POSTS_PER_RUN);
 
-  await channel.send(`🔥 **AI NEWS UPDATE** — ${timestamp} 🔥\n_Found ${itemsToPost.length} important updates from X_\n`);
+  await channel.send(`🔥 **AI NEWS UPDATE** — ${timestamp} 🔥\n_Found ${itemsToPost.length} important updates across ${config.ENABLED_SOURCES.join(', ')}_\n`);
 
-  for (const item of itemsToPost) {
+  for (const result of itemsToPost) {
     try {
-      const { embed } = formatNewsItem(item);
+      const { embed } = formatNewsItem(result);
       await channel.send({
-        content: item.tweet.url,
+        content: result.item.url,
         embeds: [embed],
       });
-      postedItems.push(item);
+      postedItems.push(result);
       await sleep(800);
     } catch (err) {
       logger.error(`[Discord] Failed to send embed item: ${err.message}`);
 
       try {
         await channel.send(
-          `**${item.title}**\n${item.summary}\nSource: ${item.tweet.url}\nImpact: ${item.importance}/10`
+          `**${result.title}**\n${result.summary}\nSource: ${result.item.sourceLabel} · ${result.item.url}\nImpact: ${result.importance}/10`
         );
-        postedItems.push(item);
+        postedItems.push(result);
       } catch (fallbackErr) {
         logger.error(`[Discord] Fallback plain-text send failed: ${fallbackErr.message}`);
       }
@@ -101,8 +113,8 @@ async function sendNewsUpdate(items, logger = console) {
   }
 
   if (postedItems.length > 0) {
-    const links = postedItems.map((item, i) =>
-      `${i + 1}. [${item.title}](${item.tweet.url})`
+    const links = postedItems.map((result, index) =>
+      `${index + 1}. [${result.title}](${result.item.url})`
     ).join('\n');
     await channel.send(`📋 **Quick Links:**\n${links}`);
   }

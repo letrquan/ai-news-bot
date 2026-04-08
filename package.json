@@ -1,12 +1,15 @@
 {
   "name": "ai-news-bot",
   "version": "1.0.0",
-  "description": "Curates AI news from an authenticated X timeline and posts scored summaries to Discord.",
+  "description": "Aggregates AI news from X, Hacker News, Reddit, and RSS, then posts scored summaries to Discord.",
   "main": "index.js",
   "scripts": {
     "start": "node -r dotenv/config index.js",
     "dev": "node -r dotenv/config index.js",
     "dry-run": "DRY_RUN=true node -r dotenv/config index.js",
+    "docker:build": "docker build -t ai-news-bot .",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
     "pm2:start": "npx pm2 start start.sh --name ai-news-bot --interpreter bash && npx pm2 save",
     "pm2:stop": "npx pm2 stop ai-news-bot",
     "pm2:restart": "npx pm2 restart ai-news-bot",

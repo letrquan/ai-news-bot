@@ -1,7 +1,7 @@
-const { crawlTweets, crawlTweetsFallback } = require('./modules/crawler');
+const { collectNewsItems } = require('./modules/sources');
 const { filterAndSummarize } = require('./modules/ai-filter');
 const { init: initDiscord, sendNewsUpdate, destroy: destroyDiscord } = require('./modules/discord');
-const { filterNewTweets, filterUnpostedItems, markItemsPosted, recordRun } = require('./utils/cache');
+const { filterNewItems, filterUnpostedItems, markItemsPosted, recordRun } = require('./utils/cache');
 const { createLogger } = require('./utils/logger');
 const config = require('./config');
 const { CronJob } = require('cron');
@@ -19,47 +19,43 @@ async function runPipeline() {
   const runSummary = {
     crawled: 0,
     recent: 0,
-    newTweets: 0,
+    newItems: 0,
     curated: 0,
     posted: 0,
     status: 'failed',
   };
 
-  logger.info('[Pipeline] Starting run', { dryRun: config.DRY_RUN });
+  logger.info('[Pipeline] Starting run', {
+    dryRun: config.DRY_RUN,
+    enabledSources: config.ENABLED_SOURCES,
+  });
 
   try {
-    logger.info('[Pipeline] Step 1: Crawling tweets...');
-    let tweets;
-    try {
-      tweets = await crawlTweets(logger);
-    } catch (err) {
-      logger.warn(`[Pipeline] Primary crawler failed, trying fallback: ${err.message}`);
-      tweets = await crawlTweetsFallback(logger);
-    }
+    logger.info('[Pipeline] Step 1: Collecting source items...');
+    const items = await collectNewsItems(logger);
+    runSummary.crawled = items.length;
 
-    runSummary.crawled = tweets.length;
-
-    if (!tweets.length) {
-      logger.info('[Pipeline] No tweets found. Skipping.');
-      runSummary.status = 'no_tweets';
+    if (!items.length) {
+      logger.info('[Pipeline] No items found. Skipping.');
+      runSummary.status = 'no_items';
       return;
     }
 
     const cutoff = new Date(Date.now() - config.HOURS_LOOKBACK * 60 * 60 * 1000);
-    const recentTweets = tweets.filter(tweet => new Date(tweet.createdAt) > cutoff);
-    const newTweets = filterNewTweets(recentTweets, config, logger);
+    const recentItems = items.filter(item => new Date(item.createdAt) > cutoff);
+    const newItems = filterNewItems(recentItems, config, logger);
 
-    runSummary.recent = recentTweets.length;
-    runSummary.newTweets = newTweets.length;
+    runSummary.recent = recentItems.length;
+    runSummary.newItems = newItems.length;
 
-    if (!newTweets.length) {
-      logger.info('[Pipeline] No new tweets. Skipping.');
-      runSummary.status = 'no_new_tweets';
+    if (!newItems.length) {
+      logger.info('[Pipeline] No new items. Skipping.');
+      runSummary.status = 'no_new_items';
       return;
     }
 
     logger.info('[Pipeline] Step 2: AI filtering & summarizing...');
-    const curated = filterUnpostedItems(await filterAndSummarize(newTweets, logger), config, logger);
+    const curated = filterUnpostedItems(await filterAndSummarize(newItems, logger), config, logger);
     runSummary.curated = curated.length;
 
     if (!curated.length) {
@@ -89,6 +85,7 @@ async function start() {
     schedule: config.SCHEDULE_CRON,
     timezone: config.TIMEZONE,
     dryRun: config.DRY_RUN,
+    enabledSources: config.ENABLED_SOURCES,
   });
 
   await initDiscord(logger);

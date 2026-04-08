@@ -1,0 +1,14 @@
+services:
+  ai-news-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-news-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      STATE_FILE: /app/data/bot-state.json
+    volumes:
+      - ./data:/app/data
+    command: npm start

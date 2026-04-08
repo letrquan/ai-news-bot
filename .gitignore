@@ -1,3 +1,4 @@
 node_modules/
 .env
-sent-tweets.json
+bot-state.json
+data/

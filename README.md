@@ -1,109 +1,123 @@
 # AI News Discord Bot
 
-Automated AI news pipeline: **X home timeline crawl -> OpenAI-compatible filtering/summarization -> Discord delivery**
+Automated AI news pipeline: **multi-source collection -> OpenAI-compatible curation -> Discord delivery**
+
+## Sources
+
+- X home timeline via authenticated session cookies
+- Hacker News via Algolia search API
+- Reddit via subreddit search endpoints
+- RSS feeds such as OpenAI News and Hugging Face Blog
 
 ## Architecture
 
 ```
-┌──────────────┐     ┌──────────────┐     ┌─────────────┐
-│   X / Twitter│────▶│  OpenAI AI   │────▶│  Discord    │
-│  Home Timeline│    │  Filter &    │     │  Selfbot    │
-│  Crawler      │    │  Summarizer  │     │  (Embeds)   │
-└──────────────┘     └──────────────┘     └─────────────┘
-     Step 1               Step 2              Step 3
+┌──────────────┐
+│   Sources    │  X + Hacker News + Reddit + RSS
+└──────┬───────┘
+       ▼
+┌──────────────┐
+│  Aggregator  │  Normalize, dedupe, rank, time-filter
+└──────┬───────┘
+       ▼
+┌──────────────┐
+│  OpenAI AI   │  Filter, score, summarize
+└──────┬───────┘
+       ▼
+┌──────────────┐
+│   Discord    │  Digest embeds + quick links
+└──────────────┘
 ```
 
-## Setup
+## Local Setup
 
-### 1. Install dependencies
 ```bash
-cd ai-news-bot
 npm install
-```
-
-### 2. Get API keys
-
-| Key | Where to get |
-|-----|-------------|
-| **Discord Token** | Open Discord in browser -> DevTools -> Application -> Local Storage -> `token` |
-| **OpenAI Key** | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
-| **X Auth Cookies** | Authenticated X session values for `auth_token` and `ct0` |
-
-### 3. Configure
-```bash
 cp .env.example .env
-# Edit .env with your keys
-nano .env
 ```
 
-### 4. Run
+Edit `.env`, then run:
+
 ```bash
-node index.js
+npm start
 ```
 
-### 5. Test safely
+Safe test:
+
 ```bash
-DRY_RUN=true node index.js
+npm run dry-run
 ```
 
-## Config Options
+## Docker Deployment
+
+Build and run:
+
+```bash
+docker compose up -d --build
+```
+
+Stop:
+
+```bash
+docker compose down
+```
+
+The compose setup stores runtime state in `./data/bot-state.json` on the host.
+
+## Important Config
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TWITTER_MAX_RESULTS` | `20` | Timeline tweets to inspect per run |
-| `HOURS_LOOKBACK` | `3` | Only include tweets from last N hours |
-| `SCHEDULE_CRON` | `0 */3 * * *` | Cron schedule |
-| `FILTER_PROMPT` | ... | AI instruction for what to keep |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI-compatible model to use |
-| `MIN_IMPORTANCE` | `6` | Minimum AI score to keep |
-| `MAX_POSTS_PER_RUN` | `10` | Maximum items sent to Discord |
-| `DRY_RUN` | `false` | Skip Discord login and print the digest |
-| `LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug` |
-| `TIMEZONE` | `Asia/Ho_Chi_Minh` | Scheduler and timestamp timezone |
+| `ENABLED_SOURCES` | `x,hackernews,reddit,rss` | Comma-separated source list |
+| `X_MAX_RESULTS` | `20` | X timeline items to inspect |
+| `HACKERNEWS_KEYWORDS` | `AI,LLM,...` | HN query keywords |
+| `REDDIT_SUBREDDITS` | `MachineLearning,LocalLLaMA` | Reddit sources |
+| `RSS_FEEDS` | OpenAI + Hugging Face feeds | RSS sources |
+| `RSS_MAX_RESULTS_PER_FEED` | `25` | Cap fetched entries per RSS feed |
+| `HOURS_LOOKBACK` | `6` | Keep only items newer than this |
+| `MIN_IMPORTANCE` | `6` | Minimum AI score kept |
+| `MAX_POSTS_PER_RUN` | `10` | Maximum items posted per run |
+| `DRY_RUN` | `false` | Skip Discord posting and log the digest |
+| `STATE_FILE` | `bot-state.json` | Persistent seen/posted state file |
 
-## How it works
+If `x` is enabled in `ENABLED_SOURCES`, `X_AUTH_TOKEN` and `X_CT0` are required. Other sources work without those secrets.
 
-1. **Crawl**: fetch your X home timeline through authenticated GraphQL endpoints.
-2. **Pre-filter**: remove blocked accounts, obvious low-signal posts, and duplicate tweet IDs.
-3. **Curate**: use an OpenAI-compatible model to score, categorize, and summarize the strongest items.
-4. **Deliver**: send embeds and quick links to Discord, or log the payload in dry-run mode.
-5. **Persist**: write seen/post history and recent run summaries to `bot-state.json`.
+## How It Works
 
-## Cron Examples
-
-```
-0 */2 * * *          # Every 2 hours
-0 9,12,18,21 * * *   # 4 times a day
-*/30 * * * *         # Every 30 minutes
-```
+1. Each enabled source crawler fetches items independently.
+2. The aggregator normalizes them into one item format.
+3. The pipeline deduplicates, ranks, and drops stale items.
+4. The model selects the strongest stories and writes short summaries.
+5. Discord receives the top items, while `bot-state.json` prevents reposts.
 
 ## Folder Structure
 
 ```
 ai-news-bot/
-├── index.js                  # Entry point
-├── .env.example              # Config template
-├── bot-state.json            # Runtime state (created automatically)
+├── Dockerfile
+├── docker-compose.yml
+├── index.js
+├── .env.example
 ├── src/
-│   ├── config.js             # Config parsing + validation
-│   ├── orchestrator.js       # Pipeline + scheduler
+│   ├── config.js
+│   ├── orchestrator.js
 │   ├── modules/
-│   │   ├── crawler.js        # X home timeline crawler
-│   │   ├── ai-filter.js      # OpenAI filter/summarize
-│   │   └── discord.js        # Discord selfbot sender
+│   │   ├── ai-filter.js
+│   │   ├── discord.js
+│   │   └── sources/
+│   │       ├── common.js
+│   │       ├── hackernews.js
+│   │       ├── index.js
+│   │       ├── reddit.js
+│   │       ├── rss.js
+│   │       └── x.js
 │   └── utils/
-│       ├── cache.js          # Seen/posted state store
-│       └── logger.js         # Structured logger
+│       ├── cache.js
+│       └── logger.js
 ```
 
-## Improvements In This Repo
+## Notes
 
-- Startup config validation now fails fast with a clear message.
-- `DRY_RUN=true` lets you test crawl + curation without touching Discord.
-- A persistent `bot-state.json` file tracks seen tweets, posted tweets, and recent run history.
-- Logging is structured and level-based for easier debugging.
-- Docs now match the current code path instead of the old Apify-based description.
-
-## Disclaimer
-
-Using selfbots violates Discord's ToS. Use at your own risk. Consider using a bot token or webhook as a safer alternative.
+- `DRY_RUN=true` exercises the full collection and curation pipeline without sending to Discord.
+- The repo still uses a Discord selfbot client. That violates Discord's ToS and is operationally fragile.
+- PM2 scripts remain available, but Docker is now the preferred deployment path.

@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const DEFAULT_STATE_FILE = path.join(__dirname, '..', '..', 'bot-state.json');
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_RUN_HISTORY = 50;
 
@@ -13,8 +13,8 @@ function getStateFile(config) {
 function createEmptyState() {
   return {
     version: STATE_VERSION,
-    seenTweets: {},
-    postedTweets: {},
+    seenItems: {},
+    postedItems: {},
     runs: [],
   };
 }
@@ -33,8 +33,8 @@ function readState(config) {
     return {
       ...createEmptyState(),
       ...parsed,
-      seenTweets: parsed.seenTweets || {},
-      postedTweets: parsed.postedTweets || {},
+      seenItems: parsed.seenItems || parsed.seenTweets || {},
+      postedItems: parsed.postedItems || parsed.postedTweets || {},
       runs: Array.isArray(parsed.runs) ? parsed.runs : [],
     };
   } catch (err) {
@@ -56,15 +56,15 @@ function writeState(config, state) {
 }
 
 function pruneState(state, now = Date.now()) {
-  for (const [id, timestamp] of Object.entries(state.seenTweets)) {
+  for (const [id, timestamp] of Object.entries(state.seenItems)) {
     if (now - timestamp > MAX_AGE_MS) {
-      delete state.seenTweets[id];
+      delete state.seenItems[id];
     }
   }
 
-  for (const [id, timestamp] of Object.entries(state.postedTweets)) {
+  for (const [id, timestamp] of Object.entries(state.postedItems)) {
     if (now - timestamp > MAX_AGE_MS) {
-      delete state.postedTweets[id];
+      delete state.postedItems[id];
     }
   }
 
@@ -72,26 +72,24 @@ function pruneState(state, now = Date.now()) {
   return state;
 }
 
-function filterNewTweets(tweets, config, logger = console) {
+function filterNewItems(items, config, logger = console) {
   const state = pruneState(readState(config));
   const now = Date.now();
-  const newTweets = tweets.filter(tweet => !state.seenTweets[tweet.id]);
+  const freshItems = items.filter(item => !state.seenItems[item.id]);
 
-  for (const tweet of tweets) {
-    state.seenTweets[tweet.id] = now;
+  for (const item of items) {
+    state.seenItems[item.id] = now;
   }
 
   writeState(config, state);
-  logger.info(
-    `[State] ${newTweets.length} new / ${tweets.length} recent (${Object.keys(state.seenTweets).length} seen cached)`
-  );
+  logger.info(`[State] ${freshItems.length} new / ${items.length} recent (${Object.keys(state.seenItems).length} seen cached)`);
 
-  return newTweets;
+  return freshItems;
 }
 
 function filterUnpostedItems(items, config, logger = console) {
   const state = pruneState(readState(config));
-  const unpostedItems = items.filter(item => !state.postedTweets[item.tweet.id]);
+  const unpostedItems = items.filter(item => !state.postedItems[item.item.id]);
 
   if (items.length !== unpostedItems.length) {
     logger.info(`[State] Skipping ${items.length - unpostedItems.length} already-posted item(s)`);
@@ -109,7 +107,7 @@ function markItemsPosted(items, config) {
   const now = Date.now();
 
   for (const item of items) {
-    state.postedTweets[item.tweet.id] = now;
+    state.postedItems[item.item.id] = now;
   }
 
   writeState(config, state);
@@ -125,7 +123,7 @@ function recordRun(summary, config) {
 }
 
 module.exports = {
-  filterNewTweets,
+  filterNewItems,
   filterUnpostedItems,
   markItemsPosted,
   readState,
