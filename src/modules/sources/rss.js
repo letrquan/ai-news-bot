@@ -1,5 +1,5 @@
 const config = require('../../config');
-const { fetchText, parseDate, scoreItem, stableId, dedupeItems, stripHtml, truncate } = require('./common');
+const { fetchText, parseDate, scoreItem, stableId, dedupeItems, stripHtml, truncate, finalizeItem } = require('./common');
 
 function matchAll(content, pattern) {
   return [...content.matchAll(pattern)].map(match => match[1]);
@@ -106,6 +106,8 @@ async function crawlRss(logger = console) {
   }));
 
   const items = dedupeItems(results.flat())
+    .map(item => finalizeItem(item, config))
+    .filter(Boolean)
     .map(item => ({ ...item, sortScore: scoreItem(item, config) }))
     .sort((a, b) => b.sortScore - a.sortScore);
 

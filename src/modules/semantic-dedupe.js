@@ -1,6 +1,6 @@
 const OpenAI = require('openai');
 const config = require('../config');
-const { getRecentSemanticMemory } = require('../utils/cache');
+const { getRecentSemanticMemory, getRecentStoryMemory } = require('../utils/cache');
 
 let warnedDisabled = false;
 
@@ -38,6 +38,20 @@ function normalizeSemanticText(item) {
     .filter(Boolean)
     .join('\n')
     .slice(0, config.SEMANTIC_EMBEDDING_MAX_CHARS);
+}
+
+function computeStoryKey(item) {
+  const domain = item.quality?.domain || '';
+  const normalizedTitle = String(item.title || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .slice(0, 12)
+    .join('-');
+
+  return `${domain || item.source}:${normalizedTitle || item.id}`;
 }
 
 function dot(a, b) {
@@ -92,27 +106,30 @@ async function filterSemanticDuplicates(items, logger = console) {
     }
 
     return {
-      items,
+      items: items.map(item => ({ ...item, storyKey: computeStoryKey(item), storyFingerprint: normalizeSemanticText(item) })),
       skipped: 0,
     };
   }
 
   if (!items.length) {
-    return { items: [], skipped: 0 };
+    return { items: [], skipped: 0, duplicates: [] };
   }
 
   const recentMemory = getRecentSemanticMemory(config);
+  const recentStoryMemory = getRecentStoryMemory(config);
   const texts = items.map(normalizeSemanticText);
   const embeddings = await embedTexts(client, texts);
 
   const acceptedItems = [];
   const acceptedEmbeddings = [];
+  const duplicates = [];
   let skipped = 0;
 
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
     const embedding = embeddings[index];
     const text = texts[index];
+    const storyKey = computeStoryKey(item);
 
     let maxSimilarity = 0;
 
@@ -120,6 +137,15 @@ async function filterSemanticDuplicates(items, logger = console) {
       maxSimilarity = Math.max(maxSimilarity, cosineSimilarity(embedding, memory.embedding));
       if (maxSimilarity > config.SEMANTIC_SIMILARITY_THRESHOLD) {
         break;
+      }
+    }
+
+    if (maxSimilarity <= config.SEMANTIC_SIMILARITY_THRESHOLD) {
+      for (const story of recentStoryMemory) {
+        if (story.storyKey === storyKey) {
+          maxSimilarity = Math.max(maxSimilarity, config.SEMANTIC_SIMILARITY_THRESHOLD + 0.01);
+          break;
+        }
       }
     }
 
@@ -134,6 +160,12 @@ async function filterSemanticDuplicates(items, logger = console) {
 
     if (maxSimilarity > config.SEMANTIC_SIMILARITY_THRESHOLD) {
       skipped += 1;
+      duplicates.push({
+        ...item,
+        storyKey,
+        storyFingerprint: text,
+        reasons: ['semantic_duplicate'],
+      });
       logger.info('[SemanticDedupe] Skipping semantically similar item', {
         itemId: item.id,
         similarity: Number(maxSimilarity.toFixed(3)),
@@ -144,6 +176,8 @@ async function filterSemanticDuplicates(items, logger = console) {
 
     item.semanticText = text;
     item.semanticEmbedding = embedding;
+    item.storyKey = storyKey;
+    item.storyFingerprint = text;
     acceptedItems.push(item);
     acceptedEmbeddings.push(embedding);
   }
@@ -158,6 +192,7 @@ async function filterSemanticDuplicates(items, logger = console) {
   return {
     items: acceptedItems,
     skipped,
+    duplicates,
   };
 }
 

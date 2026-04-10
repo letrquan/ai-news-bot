@@ -1,5 +1,5 @@
 const config = require('../../config');
-const { fetchJson, parseDate, scoreItem, stableId, dedupeItems, truncate } = require('./common');
+const { fetchJson, parseDate, scoreItem, stableId, dedupeItems, truncate, finalizeItem } = require('./common');
 
 function buildUrl(subreddit) {
   const params = new URLSearchParams({
@@ -50,6 +50,8 @@ async function crawlReddit(logger = console) {
   }));
 
   const items = dedupeItems(results.flat())
+    .map(item => finalizeItem(item, config))
+    .filter(Boolean)
     .map(item => ({ ...item, sortScore: scoreItem(item, config) }))
     .sort((a, b) => b.sortScore - a.sortScore);
 

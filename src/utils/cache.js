@@ -3,14 +3,23 @@ const path = require('path');
 const Database = require('better-sqlite3');
 
 const DEFAULT_STATE_FILE = path.join(__dirname, '..', '..', 'bot-state.db');
-const STATE_VERSION = 3;
+const STATE_VERSION = 4;
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_RUN_HISTORY = 50;
 
 const dbCache = new Map();
 
 function getStateFile(config) {
-  return config.STATE_FILE || DEFAULT_STATE_FILE;
+  const basePath = config.STATE_FILE || DEFAULT_STATE_FILE;
+  if (!config.DRY_RUN) {
+    return basePath;
+  }
+
+  if (basePath.endsWith('.db')) {
+    return basePath.replace(/\.db$/i, '.dry-run.db');
+  }
+
+  return `${basePath}.dry-run`;
 }
 
 function getLegacyJsonFile(dbPath) {
@@ -58,6 +67,41 @@ function initializeSchema(db) {
       content TEXT NOT NULL,
       embedding_json TEXT NOT NULL,
       sent_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS story_memory (
+      story_key TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      url TEXT NOT NULL,
+      source TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      first_seen_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      posted_at INTEGER NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS item_decisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_timestamp TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      reasons_json TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS source_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_timestamp TEXT NOT NULL,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL,
+      item_count INTEGER NOT NULL,
+      error_message TEXT,
+      meta_json TEXT NOT NULL
     );
   `);
 
@@ -158,9 +202,11 @@ function getDb(config) {
 function pruneState(db, config, now = Date.now()) {
   const cutoff = now - MAX_AGE_MS;
   const semanticCutoff = now - config.SEMANTIC_MEMORY_MAX_AGE_HOURS * 60 * 60 * 1000;
+  const storyCutoff = now - config.STORY_MEMORY_MAX_AGE_HOURS * 60 * 60 * 1000;
   db.prepare('DELETE FROM seen_items WHERE seen_at < ?').run(cutoff);
   db.prepare('DELETE FROM posted_items WHERE posted_at < ?').run(cutoff);
   db.prepare('DELETE FROM semantic_memory WHERE sent_at < ?').run(semanticCutoff);
+  db.prepare('DELETE FROM story_memory WHERE last_seen_at < ?').run(storyCutoff);
 
   const runCount = db.prepare('SELECT COUNT(*) AS count FROM runs').get().count;
   const excessRuns = runCount - MAX_RUN_HISTORY;
@@ -174,6 +220,84 @@ function pruneState(db, config, now = Date.now()) {
       )
     `).run(excessRuns);
   }
+
+  const sourceRunCount = db.prepare('SELECT COUNT(*) AS count FROM source_runs').get().count;
+  const excessSourceRuns = sourceRunCount - config.SOURCE_HEALTH_HISTORY_LIMIT;
+  if (excessSourceRuns > 0) {
+    db.prepare(`
+      DELETE FROM source_runs
+      WHERE id IN (
+        SELECT id FROM source_runs
+        ORDER BY id ASC
+        LIMIT ?
+      )
+    `).run(excessSourceRuns);
+  }
+
+  const decisionCount = db.prepare('SELECT COUNT(*) AS count FROM item_decisions').get().count;
+  const excessDecisions = decisionCount - 5000;
+  if (excessDecisions > 0) {
+    db.prepare(`
+      DELETE FROM item_decisions
+      WHERE id IN (
+        SELECT id FROM item_decisions
+        ORDER BY id ASC
+        LIMIT ?
+      )
+    `).run(excessDecisions);
+  }
+}
+
+function logItemDecisions(stage, items, decision, config, runTimestamp) {
+  if (!items?.length) {
+    return;
+  }
+
+  const db = getDb(config);
+  pruneState(db, config);
+
+  const insertDecision = db.prepare(`
+    INSERT INTO item_decisions (run_timestamp, stage, item_id, source, decision, reasons_json, payload_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  db.transaction(decisionItems => {
+    for (const item of decisionItems) {
+      const baseItem = item.item || item;
+      const reasons = item.reasons || baseItem.quality?.rejectionReasons || [];
+      insertDecision.run(
+        runTimestamp,
+        stage,
+        baseItem.id,
+        baseItem.source || 'unknown',
+        decision,
+        JSON.stringify(reasons),
+        JSON.stringify({
+          title: baseItem.title,
+          url: baseItem.url,
+          sortScore: baseItem.sortScore || null,
+          importance: item.importance || null,
+        })
+      );
+    }
+  })(items);
+}
+
+function recordSourceRun(source, status, itemCount, errorMessage, meta, config, runTimestamp) {
+  const db = getDb(config);
+  pruneState(db, config);
+
+  db.prepare(`
+    INSERT INTO source_runs (run_timestamp, source, status, item_count, error_message, meta_json)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    runTimestamp,
+    source,
+    status,
+    itemCount,
+    errorMessage || null,
+    JSON.stringify(meta || {})
+  );
 }
 
 function filterNewItems(items, config, logger = console) {
@@ -206,15 +330,44 @@ function filterNewItems(items, config, logger = console) {
   return freshItems;
 }
 
+function isMaterialUpdate(result, config) {
+  const db = getDb(config);
+  pruneState(db, config);
+
+  const item = result.item || result;
+  const storyKey = item.storyKey || item.url || item.id;
+  const existing = db.prepare('SELECT posted_at, payload_json FROM story_memory WHERE story_key = ?').get(storyKey);
+  if (!existing) {
+    return true;
+  }
+
+  try {
+    const previous = JSON.parse(existing.payload_json);
+    const previousImportance = Number(previous.importance || 0);
+    const currentImportance = Number(result.importance || 0);
+    const minutesSincePrevious = (Date.now() - Number(existing.posted_at)) / (60 * 1000);
+    const summaryChanged = (previous.summary || '') !== (result.summary || '');
+    const titleChanged = (previous.title || '') !== (result.title || '');
+
+    if (minutesSincePrevious < config.STORY_UPDATE_MINUTES && currentImportance <= previousImportance && !summaryChanged && !titleChanged) {
+      return false;
+    }
+  } catch {
+    return true;
+  }
+
+  return true;
+}
+
 function filterUnpostedItems(items, config, logger = console) {
   const db = getDb(config);
   pruneState(db, config);
 
   const findPosted = db.prepare('SELECT 1 FROM posted_items WHERE item_id = ?');
-  const unpostedItems = items.filter(item => !findPosted.get(item.item.id));
+  const unpostedItems = items.filter(item => !findPosted.get(item.item.id) && isMaterialUpdate(item, config));
 
   if (items.length !== unpostedItems.length) {
-    logger.info(`[State] Skipping ${items.length - unpostedItems.length} already-posted item(s)`);
+    logger.info(`[State] Skipping ${items.length - unpostedItems.length} already-posted or non-material item(s)`);
   }
 
   return unpostedItems;
@@ -298,6 +451,29 @@ function getRecentSemanticMemory(config) {
   }));
 }
 
+function getRecentStoryMemory(config) {
+  const db = getDb(config);
+  pruneState(db, config);
+
+  return db.prepare(`
+    SELECT story_key, item_id, title, url, source, domain, fingerprint, first_seen_at, last_seen_at, posted_at, payload_json
+    FROM story_memory
+    ORDER BY posted_at DESC
+  `).all().map(row => ({
+    storyKey: row.story_key,
+    itemId: row.item_id,
+    title: row.title,
+    url: row.url,
+    source: row.source,
+    domain: row.domain,
+    fingerprint: row.fingerprint,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    postedAt: row.posted_at,
+    payload: JSON.parse(row.payload_json),
+  }));
+}
+
 function storeSemanticMemory(items, config) {
   if (!items.length) {
     return;
@@ -337,12 +513,66 @@ function storeSemanticMemory(items, config) {
   })(items);
 }
 
+function storeStoryMemory(items, config) {
+  if (!items.length) {
+    return;
+  }
+
+  const db = getDb(config);
+  const now = Date.now();
+  pruneState(db, config, now);
+
+  const upsertStory = db.prepare(`
+    INSERT INTO story_memory (story_key, item_id, title, url, source, domain, fingerprint, first_seen_at, last_seen_at, posted_at, payload_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(story_key) DO UPDATE SET
+      item_id = excluded.item_id,
+      title = excluded.title,
+      url = excluded.url,
+      source = excluded.source,
+      domain = excluded.domain,
+      fingerprint = excluded.fingerprint,
+      last_seen_at = excluded.last_seen_at,
+      posted_at = excluded.posted_at,
+      payload_json = excluded.payload_json
+  `);
+
+  db.transaction(postedItems => {
+    for (const result of postedItems) {
+      const item = result.item;
+      const storyKey = item.storyKey || item.url || item.id;
+      upsertStory.run(
+        storyKey,
+        item.id,
+        item.title || '',
+        item.url || '',
+        item.source || 'unknown',
+        item.quality?.domain || '',
+        item.storyFingerprint || item.semanticText || item.title || '',
+        now,
+        now,
+        now,
+        JSON.stringify({
+          title: result.title,
+          summary: result.summary,
+          importance: result.importance,
+          category: result.category,
+        })
+      );
+    }
+  })(items);
+}
+
 module.exports = {
   filterNewItems,
   filterUnpostedItems,
   getRecentSemanticMemory,
+  getRecentStoryMemory,
+  logItemDecisions,
   markItemsPosted,
   readState,
   recordRun,
+  recordSourceRun,
   storeSemanticMemory,
+  storeStoryMemory,
 };

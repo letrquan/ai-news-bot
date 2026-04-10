@@ -1,5 +1,5 @@
 const config = require('../../config');
-const { parseDate, scoreItem, stableId, dedupeItems } = require('./common');
+const { parseDate, scoreItem, stableId, dedupeItems, finalizeItem } = require('./common');
 
 const BEARER_TOKEN = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
 const GRAPHQL_BASE = 'https://x.com/i/api/graphql';
@@ -195,6 +195,8 @@ async function crawlX(logger = console) {
   }
 
   const items = filterItems(parseTimelineItems(data))
+    .map(item => finalizeItem(item, config))
+    .filter(Boolean)
     .map(item => ({ ...item, sortScore: scoreItem(item, config) }))
     .sort((a, b) => b.sortScore - a.sortScore);
 

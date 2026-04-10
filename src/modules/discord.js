@@ -1,4 +1,8 @@
 const config = require('../config');
+const { cleanText, sanitizeUrl, truncate } = require('./sources/common');
+
+const DISCORD_MAX_CONTENT = 1800;
+const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 async function init(logger = console) {
   if (config.DRY_RUN) {
@@ -7,6 +11,17 @@ async function init(logger = console) {
   }
 
   logger.info('[Discord] Webhook delivery enabled');
+}
+
+function sanitizeDiscordText(value, maxLength = DISCORD_MAX_CONTENT) {
+  const sanitized = cleanText(value)
+    .replace(/@everyone/g, '@\u200beveryone')
+    .replace(/@here/g, '@\u200bhere')
+    .replace(/<@&?\d+>/g, '[mention removed]')
+    .replace(/<#\d+>/g, '[channel removed]')
+    .replace(/<a?:\w+:\d+>/g, '[emoji removed]');
+
+  return truncate(sanitized, maxLength);
 }
 
 function formatDryRun(items) {
@@ -25,6 +40,7 @@ function buildWebhookBody(payload) {
   return {
     username: config.DISCORD_WEBHOOK_USERNAME || undefined,
     avatar_url: config.DISCORD_WEBHOOK_AVATAR_URL || undefined,
+    allowed_mentions: { parse: [] },
     ...payload,
   };
 }
@@ -40,8 +56,55 @@ async function postWebhook(payload) {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Webhook post failed: ${response.status} ${text.slice(0, 300)}`);
+    const error = new Error(`Webhook post failed: ${response.status} ${text.slice(0, 300)}`);
+    error.status = response.status;
+    throw error;
   }
+}
+
+async function postWebhookWithRetry(payload, logger = console, attempts = 3) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await postWebhook(payload);
+      return;
+    } catch (err) {
+      lastError = err;
+      if (!RETRYABLE_STATUS_CODES.has(err.status) || attempt === attempts) {
+        break;
+      }
+
+      logger.warn(`[Discord] Webhook attempt ${attempt} failed, retrying: ${err.message}`);
+      await sleep(attempt * 1000);
+    }
+  }
+
+  throw lastError;
+}
+
+function buildHeaderContent(itemsToPost, timestamp) {
+  return sanitizeDiscordText(
+    `AI NEWS UPDATE — ${timestamp}\nFound ${itemsToPost.length} important updates across ${config.ENABLED_SOURCES.join(', ')}`,
+    500,
+  );
+}
+
+function buildItemMessage(result, index) {
+  const source = sanitizeDiscordText(result.item.sourceLabel, 80);
+  const category = sanitizeDiscordText(result.category, 40);
+  const title = sanitizeDiscordText(result.title, 180);
+  const summary = sanitizeDiscordText(result.summary, 500);
+  const url = sanitizeUrl(result.item.url || '', '');
+
+  if (!url) {
+    return null;
+  }
+
+  return sanitizeDiscordText(
+    `[${index + 1}] ${title}\nCategory: ${category} | Importance: ${result.importance}/10 | Source: ${source}\n${summary}\n${url}`,
+    DISCORD_MAX_CONTENT,
+  );
 }
 
 async function sendNewsUpdate(items, logger = console) {
@@ -57,17 +120,23 @@ async function sendNewsUpdate(items, logger = console) {
   const postedItems = [];
   const itemsToPost = items.slice(0, config.MAX_POSTS_PER_RUN);
 
-  await postWebhook({
-    content: `🔥 **AI NEWS UPDATE** — ${timestamp} 🔥\nFound ${itemsToPost.length} important updates across ${config.ENABLED_SOURCES.join(', ')}`,
-  });
+  await postWebhookWithRetry({
+    content: buildHeaderContent(itemsToPost, timestamp),
+  }, logger);
 
-  for (const result of itemsToPost) {
+  for (const [index, result] of itemsToPost.entries()) {
+    const content = buildItemMessage(result, index);
+    if (!content) {
+      logger.warn('[Discord] Skipping item with invalid URL', { title: result.title });
+      continue;
+    }
+
     try {
-      await postWebhook({ content: result.item.url });
+      await postWebhookWithRetry({ content }, logger);
       postedItems.push(result);
       await sleep(800);
     } catch (err) {
-      logger.error(`[Discord] Failed to send item link: ${err.message}`);
+      logger.error(`[Discord] Failed to send item: ${err.message}`);
     }
   }
 

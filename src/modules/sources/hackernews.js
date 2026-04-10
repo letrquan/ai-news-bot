@@ -1,5 +1,5 @@
 const config = require('../../config');
-const { fetchJson, parseDate, scoreItem, stableId, dedupeItems, truncate } = require('./common');
+const { fetchJson, parseDate, scoreItem, stableId, dedupeItems, truncate, finalizeItem } = require('./common');
 
 const ALGOLIA_BASE = 'https://hn.algolia.com/api/v1/search_by_date';
 
@@ -42,6 +42,8 @@ async function crawlHackerNews(logger = console) {
   logger.info('[Source:HN] Querying Algolia API');
   const data = await fetchJson(`${ALGOLIA_BASE}?${params}`);
   const items = dedupeItems((data.hits || []).map(mapHit))
+    .map(item => finalizeItem(item, config))
+    .filter(Boolean)
     .map(item => ({ ...item, sortScore: scoreItem(item, config) }))
     .sort((a, b) => b.sortScore - a.sortScore);
 
